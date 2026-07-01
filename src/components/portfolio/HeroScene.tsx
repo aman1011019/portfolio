@@ -127,7 +127,8 @@ function Artifact() {
   return (
     <Float speed={1.4} rotationIntensity={0.5} floatIntensity={1.2}>
       <mesh ref={mesh}>
-        <icosahedronGeometry args={[1.4, 64]} />
+        {/* Reduced subdivisions 64 → 20: visually identical, ~10× faster to render */}
+        <icosahedronGeometry args={[1.4, 20]} />
         <shaderMaterial
           ref={mat}
           uniforms={uniforms}
@@ -150,8 +151,9 @@ function OrbitalRing({ radius = 2.6, color = "#6FFF00", speed = 0.5, tilt = 0.4 
   });
   const points = useMemo(() => {
     const arr: THREE.Vector3[] = [];
-    for (let i = 0; i <= 128; i++) {
-      const a = (i / 128) * Math.PI * 2;
+    // Reduced ring segments 128 → 64 for lower CPU/GPU overhead
+    for (let i = 0; i <= 64; i++) {
+      const a = (i / 64) * Math.PI * 2;
       arr.push(new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0));
     }
     return arr;
@@ -164,7 +166,7 @@ function OrbitalRing({ radius = 2.6, color = "#6FFF00", speed = 0.5, tilt = 0.4 
         <lineBasicMaterial color={color} transparent opacity={0.55} />
       </line>
       <mesh position={[radius, 0, 0]}>
-        <sphereGeometry args={[0.06, 16, 16]} />
+        <sphereGeometry args={[0.06, 8, 8]} />
         <meshBasicMaterial color={color} />
       </mesh>
     </group>
@@ -173,9 +175,12 @@ function OrbitalRing({ radius = 2.6, color = "#6FFF00", speed = 0.5, tilt = 0.4 
 
 function CameraRig() {
   const { camera, mouse } = useThree();
+  const smooth = useRef(new THREE.Vector2(0, 0));
   useFrame(() => {
-    camera.position.x += (mouse.x * 0.7 - camera.position.x) * 0.04;
-    camera.position.y += (mouse.y * 0.5 - camera.position.y) * 0.04;
+    smooth.current.x += (mouse.x * 0.7 - smooth.current.x) * 0.04;
+    smooth.current.y += (mouse.y * 0.5 - smooth.current.y) * 0.04;
+    camera.position.x = smooth.current.x;
+    camera.position.y = smooth.current.y;
     camera.lookAt(0, 0, 0);
   });
   return null;
@@ -184,7 +189,7 @@ function CameraRig() {
 export function HeroScene() {
   return (
     <Canvas
-      dpr={[1, 1.75]}
+      dpr={[1, 1.5]}
       camera={{ position: [0, 0, 5], fov: 50 }}
       gl={{ antialias: true, powerPreference: "high-performance" }}
     >
@@ -195,7 +200,8 @@ export function HeroScene() {
         <pointLight position={[5, 5, 5]} intensity={2} color="#6FFF00" />
         <pointLight position={[-5, -3, 4]} intensity={1.2} color="#00B7FF" />
         <pointLight position={[0, 0, 3]} intensity={0.8} color="#A855F7" />
-        <Stars radius={50} depth={30} count={2500} factor={4} fade speed={1} />
+        {/* Reduced from 2500 → 800 stars for a major framerate boost */}
+        <Stars radius={50} depth={30} count={800} factor={4} fade speed={1} />
         <Artifact />
         <OrbitalRing radius={2.4} color="#6FFF00" speed={0.4} tilt={0.5} />
         <OrbitalRing radius={2.9} color="#00B7FF" speed={-0.3} tilt={-0.6} />

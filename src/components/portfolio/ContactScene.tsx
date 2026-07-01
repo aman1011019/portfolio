@@ -117,7 +117,7 @@ function AICore() {
     () => ({
       uTime: { value: 0 },
       uNoiseFreq: { value: 1.2 },
-      uNoiseAmp: { value: 0.25 }, // Higher surface deformation
+      uNoiseAmp: { value: 0.18 }, // Tighter deformation so orb stays within its radius
       uDeformSpeed: { value: 1.2 },
       uProximityGlow: { value: 0 },
       uColorA: { value: new THREE.Color("#010828") },
@@ -153,13 +153,14 @@ function AICore() {
 
   return (
     <group>
-      {/* Large 3D Core Orb (Radius 2.6 for huge visual presence) */}
+      {/* Core Orb — radius 2.2 so it fully floats within the canvas with no clipping */}
+      {/* Reduced subdivisions 64 → 20 to cut vertex shader load ~10x */}
       <mesh
         ref={meshRef}
         onPointerOver={() => setHovered(true)}
         onPointerOut={() => setHovered(false)}
       >
-        <icosahedronGeometry args={[2.5, 64]} />
+        <icosahedronGeometry args={[2.2, 20]} />
         <shaderMaterial
           ref={shaderRef}
           uniforms={uniforms}
@@ -171,10 +172,10 @@ function AICore() {
         />
       </mesh>
 
-      {/* Cyberpunk Outer Wireframe Ring */}
+      {/* Cyberpunk Outer Wireframe Ring — sized to cleanly surround the orb */}
       <Float speed={3} rotationIntensity={1.2} floatIntensity={0.8}>
         <mesh>
-          <sphereGeometry args={[3.2, 14, 14]} />
+          <sphereGeometry args={[2.8, 10, 10]} />
           <meshBasicMaterial color="#00B7FF" wireframe transparent opacity={0.35} />
         </mesh>
       </Float>
@@ -187,8 +188,8 @@ function NeuralNetwork() {
   const lineRef = useRef<THREE.LineSegments>(null);
   const { mouse } = useThree();
 
-  const count = 55; // Increased node density
-  const { positions, linesGeom } = useMemo(() => {
+  const count = 40; // Balanced: enough for visual density, cheap for CPU
+  const { positions, linesGeom, lineBuffer } = useMemo(() => {
     const pos = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
       const theta = Math.random() * Math.PI * 2;
@@ -201,12 +202,22 @@ function NeuralNetwork() {
     }
 
     const lines = new THREE.BufferGeometry();
-    return { positions: pos, linesGeom: lines };
+    // Pre-allocate the maximum possible line buffer (count*(count-1)/2 pairs × 2 points × 3 components)
+    const maxLines = (count * (count - 1)) / 2;
+    const buf = new Float32Array(maxLines * 2 * 3);
+    const attr = new THREE.Float32BufferAttribute(buf, 3);
+    attr.setUsage(THREE.DynamicDrawUsage);
+    lines.setAttribute("position", attr);
+    return { positions: pos, linesGeom: lines, lineBuffer: buf };
   }, []);
 
   useFrame((state) => {
     const time = state.clock.getElapsedTime();
-    const linePositions: number[] = [];
+    // Use squared distance threshold to avoid sqrt (2.8² = 7.84)
+    const distSq = 7.84;
+    const mouseX = mouse.x * 5;
+    const mouseY = mouse.y * 5;
+    let lineCount = 0;
 
     for (let i = 0; i < count; i++) {
       const waveX = Math.sin(time * 0.5 + i) * 0.005;
@@ -217,10 +228,12 @@ function NeuralNetwork() {
       positions[i * 3 + 1] += waveY;
       positions[i * 3 + 2] += waveZ;
 
-      const dx = positions[i * 3] - mouse.x * 5;
-      const dy = positions[i * 3 + 1] - mouse.y * 5;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 2.0) {
+      // Mouse repulsion using squared distance (no sqrt)
+      const dx = positions[i * 3] - mouseX;
+      const dy = positions[i * 3 + 1] - mouseY;
+      const dSq = dx * dx + dy * dy;
+      if (dSq < 4.0 && dSq > 0.0001) {
+        const dist = Math.sqrt(dSq);
         const force = (2.0 - dist) * 0.04;
         positions[i * 3] += (dx / dist) * force;
         positions[i * 3 + 1] += (dy / dist) * force;
@@ -234,16 +247,23 @@ function NeuralNetwork() {
         const p2y = positions[j * 3 + 1];
         const p2z = positions[j * 3 + 2];
 
-        const d = Math.sqrt((p1x - p2x) ** 2 + (p1y - p2y) ** 2 + (p1z - p2z) ** 2);
-        if (d < 2.8) {
-          linePositions.push(p1x, p1y, p1z, p2x, p2y, p2z);
+        // Squared distance check avoids sqrt for most pairs
+        const dxp = p1x - p2x;
+        const dyp = p1y - p2y;
+        const dzp = p1z - p2z;
+        if (dxp * dxp + dyp * dyp + dzp * dzp < distSq) {
+          const base = lineCount * 6;
+          lineBuffer[base]     = p1x; lineBuffer[base + 1] = p1y; lineBuffer[base + 2] = p1z;
+          lineBuffer[base + 3] = p2x; lineBuffer[base + 4] = p2y; lineBuffer[base + 5] = p2z;
+          lineCount++;
         }
       }
     }
 
     if (lineRef.current) {
-      linesGeom.setAttribute("position", new THREE.Float32BufferAttribute(linePositions, 3));
+      // Update draw range instead of recreating the attribute
       linesGeom.attributes.position.needsUpdate = true;
+      linesGeom.setDrawRange(0, lineCount * 2);
     }
   });
 
@@ -278,7 +298,7 @@ function EnergyParticles() {
   const pointsRef = useRef<THREE.Points>(null);
   const { mouse } = useThree();
 
-  const count = 350; // Massively increased particle density
+  const count = 200; // Reduced from 350: still dense but much lighter on the GPU
   const [positions, speeds, phases] = useMemo(() => {
     const pos = new Float32Array(count * 3);
     const sp = new Float32Array(count);
@@ -298,18 +318,24 @@ function EnergyParticles() {
 
   useFrame((state, dt) => {
     const time = state.clock.getElapsedTime();
+    const mouseX = mouse.x * 6;
+    const mouseY = mouse.y * 6;
     for (let i = 0; i < count; i++) {
       const angle = (time * speeds[i] * 0.15) + phases[i];
-      const radius = Math.sqrt(positions[i * 3] ** 2 + positions[i * 3 + 1] ** 2);
+      const px = positions[i * 3];
+      const py = positions[i * 3 + 1];
+      const radius = Math.sqrt(px * px + py * py);
       
       positions[i * 3] = Math.cos(angle) * radius;
       positions[i * 3 + 1] = Math.sin(angle) * radius;
       positions[i * 3 + 2] += Math.sin(time + phases[i]) * 0.005;
 
-      const dx = positions[i * 3] - mouse.x * 6;
-      const dy = positions[i * 3 + 1] - mouse.y * 6;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      if (d < 1.8) {
+      // Squared distance for mouse repulsion (no sqrt on most particles)
+      const dx = positions[i * 3] - mouseX;
+      const dy = positions[i * 3 + 1] - mouseY;
+      const dSq = dx * dx + dy * dy;
+      if (dSq < 3.24 && dSq > 0.0001) { // 1.8² = 3.24
+        const d = Math.sqrt(dSq);
         const force = (1.8 - d) * 0.04;
         positions[i * 3] += (dx / d) * force;
         positions[i * 3 + 1] += (dy / d) * force;
@@ -459,15 +485,16 @@ export default function ContactScene() {
         </div>
       ))}
 
-      {/* WebGL Canvas */}
+      {/* WebGL Canvas — transparent background so orb floats naturally on the page */}
       <Canvas
         dpr={[1, 1.5]}
-        camera={{ position: [0, 0, 7.5], fov: 45 }}
-        gl={{ antialias: true, powerPreference: "high-performance" }}
+        camera={{ position: [0, 0, 10.5], fov: 45 }}
+        gl={{ antialias: true, powerPreference: "high-performance", alpha: true }}
+        style={{ background: "transparent" }}
         className="w-full h-full"
       >
-        <color attach="background" args={["#010828"]} />
-        <fog attach="fog" args={["#010828", 6, 16]} />
+        {/* No solid background — let the page color show through */}
+        <fog attach="fog" args={["#010828", 12, 22]} />
         <Suspense fallback={null}>
           <ambientLight intensity={0.3} />
           <pointLight position={[4, 4, 4]} intensity={3.5} color="#6FFF00" />
@@ -483,7 +510,8 @@ export default function ContactScene() {
           <EnergyPulseWave delay={1.0} color="#00B7FF" />
           <EnergyPulseWave delay={2.0} color="#6FFF00" />
 
-          <Stars radius={60} depth={20} count={950} factor={3} fade speed={1.2} />
+          {/* Reduced from 950 → 500 stars */}
+          <Stars radius={60} depth={20} count={500} factor={3} fade speed={1.2} />
           
           <CameraRig />
         </Suspense>
